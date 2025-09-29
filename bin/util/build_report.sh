@@ -114,7 +114,19 @@ function build_report::current_unix_realtime() {
 	# We use a subshell with `LC_ALL=C` to ensure the output format isn't affected by system locale.
 	(
 		LC_ALL=C
-		echo "${EPOCHREALTIME}"
+		# EPOCHREALTIME is only available in bash 5.0+
+		# For compatibility with older bash versions (like RHEL7), use date as fallback
+		if [[ -n "${EPOCHREALTIME:-}" ]]; then
+			echo "${EPOCHREALTIME}"
+		else
+			# Try date with nanosecond precision first
+			if date +%s.%N >/dev/null 2>&1; then
+				date +%s.%N
+			else
+				# Fallback to second precision
+				date +%s
+			fi
+		fi
 	)
 }
 
