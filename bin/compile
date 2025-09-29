@@ -86,15 +86,31 @@ composer_lock_parse_error=$(
 
 # a bunch of sanity checks first
 if [[ -s "$COMPOSER" ]]; then
-	if ! json_error_output=$(php -r "
-		\$json = file_get_contents('$COMPOSER');
-		\$decoded = json_decode(\$json);
-		if (json_last_error() !== JSON_ERROR_NONE) {
-			echo 'JSON Error: ' . json_last_error_msg();
-			exit(1);
-		}
-		echo 'Valid JSON';
-	" 2>&1); then
+	# Basic JSON syntax check - just verify it looks like JSON
+	# Detailed validation will be done later when PHP is available
+	if ! json_error_output=$(
+		# Remove all whitespace and check basic structure
+		content=$(tr -d '[:space:]' < "$COMPOSER")
+		
+		# Must start with { or [ and end with } or ]
+		if [[ ! "$content" =~ ^[\{\[] ]] || [[ ! "$content" =~ [\}\]]$ ]]; then
+			echo "JSON Error: File must start with { or [ and end with } or ]"
+			exit 1
+		fi
+		
+		# Basic brace/bracket matching
+		open_braces=$(echo "$content" | grep -o '{' | wc -l)
+		close_braces=$(echo "$content" | grep -o '}' | wc -l)
+		open_brackets=$(echo "$content" | grep -o '\[' | wc -l)
+		close_brackets=$(echo "$content" | grep -o '\]' | wc -l)
+		
+		if [[ $open_braces -ne $close_braces ]] || [[ $open_brackets -ne $close_brackets ]]; then
+			echo "JSON Error: Mismatched braces or brackets"
+			exit 1
+		fi
+		
+		echo "Basic JSON structure appears valid"
+	2>&1); then
 		mcount "failures.composer_json.lint"
 		error <<-EOF
 			Basic validation for '$COMPOSER' failed!
@@ -115,11 +131,8 @@ if [[ -s "$COMPOSER" ]]; then
 		EOF
 	fi
 	if [[ ! -f "$COMPOSER_LOCK" ]]; then
-		php -r "
-			\$json = json_decode(file_get_contents('$COMPOSER'), true);
-			\$has_require = !empty(\$json['require']);
-			exit(\$has_require ? 1 : 0);
-		" || {
+		# Check if composer.json has 'require' section using simple grep
+		grep -q '"require"[[:space:]]*:[[:space:]]*{' "$COMPOSER" || {
 			mcount "failures.composer_lock.missing"
 			error <<-EOF
 				No '$COMPOSER_LOCK' found!
@@ -151,16 +164,12 @@ if [[ -s "$COMPOSER" ]]; then
 			EOF
 		}
 	else
-		php -r "
-			\$json = file_get_contents('$COMPOSER_LOCK');
-			\$decoded = json_decode(\$json);
-			if (json_last_error() !== JSON_ERROR_NONE) {
-				exit(1);
-			}
-		" || {
+		# Basic validation of composer.lock - just check it looks like JSON
+		content=$(tr -d '[:space:]' < "$COMPOSER_LOCK")
+		if [[ ! "$content" =~ ^[\{\[] ]] || [[ ! "$content" =~ [\}\]]$ ]]; then
 			mcount "failures.composer_lock.lint"
 			error "$composer_lock_parse_error"
-		}
+		fi
 	fi
 else
 	if [[ ! -f "$COMPOSER" ]]; then
@@ -390,7 +399,7 @@ platform-composer validate --no-plugins --no-check-publish --no-check-all --quie
 }
 
 # if prefer-stable is false and minimum-stability is not stable, warn about potential unstable platform installs
-[[ ! -f "$COMPOSER_LOCK" ]] || minimum_stability=$(php -r "
+[[ ! -f "$COMPOSER_LOCK" ]] || minimum_stability=$(/app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$COMPOSER_LOCK'), true);
 	\$min_stability = \$json['minimum-stability'] ?? 'stable';
 	echo \$min_stability;
@@ -754,7 +763,7 @@ ignore_config_vars=$(IFS="|"; echo -n "${ignore_config_vars[*]}")
 # export config vars, except those we do not want to clobber our environment
 export_env_dir "$env_dir" '^[A-Z_][A-Z0-9_]*$' "^(${ignore_config_vars})$"
 # install dependencies unless composer.json is completely empty (in which case it'd talk to packagist.org which may be slow and is unnecessary)
-if php -r "
+if /app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$COMPOSER'), true);
 	\$empty = empty(\$json);
 	exit(\$empty ? 1 : 0);
@@ -816,7 +825,7 @@ fi
 # log number of installed dependencies
 mmeasure "dependencies.count" $(composer show --installed 2> /dev/null | wc -l)
 
-if php -r "
+if /app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$COMPOSER'), true);
 	\$has_compile = isset(\$json['scripts']['compile']);
 	exit(\$has_compile ? 0 : 1);
@@ -848,7 +857,7 @@ status "Preparing runtime environment..."
 # TODO: warn if require-dev has the package using a different branch
 shopt -u dotglob # we don't want .git, .gitignore et al
 # figure out the package dir name to write to and copy to it
-hbpdir="$composer_vendordir/$(php -r "
+hbpdir="$composer_vendordir/$(/app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$bp_dir/composer.json'), true);
 	echo \$json['name'];
 ")"
@@ -857,7 +866,7 @@ cp -r "$bp_dir"/* "$build_dir/$hbpdir/"
 # make bin dir, just in case
 mkdir -p "$build_dir/$composer_bindir"
 # figure out shortest relative path from vendor/heroku/heroku-buildpack-php to vendor/bin (or whatever the bin dir is)
-relbin=$(php -r "
+relbin=$(/app/.heroku/php-min/bin/php -r "
 	function getRelativePath(\$from, \$to) {
 		\$from = explode('/', trim(\$from, '/'));
 		\$to = explode('/', trim(\$to, '/'));
@@ -881,7 +890,7 @@ relbin=$(php -r "
 	echo getRelativePath('$composer_bindir', '$hbpdir');
 ")
 # collect bin names from composer.json
-relbins=$(php -r "
+relbins=$(/app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$bp_dir/composer.json'), true);
 	\$relbin = '$relbin';
 	foreach(\$json['bin'] as \$bin) {
