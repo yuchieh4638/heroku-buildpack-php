@@ -105,7 +105,7 @@ if [[ -s "$COMPOSER" ]]; then
 			up to date with any changes according to the instructions at
 			https://getcomposer.org/doc/01-basic-usage.md
 		EOF
-	}
+	fi
 	if [[ ! -f "$COMPOSER_LOCK" ]]; then
 		cat "$COMPOSER" | python3 -c 'import sys, json; sys.exit(bool(json.load(sys.stdin).get("require", {})))' 2> /dev/null || {
 			mcount "failures.composer_lock.missing"
