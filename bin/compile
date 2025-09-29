@@ -109,13 +109,19 @@ if [[ -s "$COMPOSER" ]]; then
 		echo "Debug: Content ends with: $(echo "$content" | tail -c 5)"
 		
 		# Must start with { or [ and end with } or ]
-		if [[ ! "$content" =~ ^[\{\[] ]]; then
-			echo "JSON Error: File must start with { or [ (found: $(echo "$content" | head -c 1))"
+		first_char="${content:0:1}"
+		last_char="${content: -1}"
+		
+		echo "Debug: First char: '$first_char' ($(echo -n "$first_char" | od -c))"
+		echo "Debug: Last char: '$last_char' ($(echo -n "$last_char" | od -c))"
+		
+		if [[ "$first_char" != "{" ]] && [[ "$first_char" != "[" ]]; then
+			echo "JSON Error: File must start with { or [ (found: '$first_char')"
 			exit 1
 		fi
 		
-		if [[ ! "$content" =~ [\}\]]$ ]]; then
-			echo "JSON Error: File must end with } or ] (found: $(echo "$content" | tail -c 1))"
+		if [[ "$last_char" != "}" ]] && [[ "$last_char" != "]" ]]; then
+			echo "JSON Error: File must end with } or ] (found: '$last_char')"
 			exit 1
 		fi
 		
