@@ -89,12 +89,33 @@ if [[ -s "$COMPOSER" ]]; then
 	# Basic JSON syntax check - just verify it looks like JSON
 	# Detailed validation will be done later when PHP is available
 	if ! json_error_output=$(
+		# Check file size and basic content
+		if [[ ! -s "$COMPOSER" ]]; then
+			echo "JSON Error: File is empty"
+			exit 1
+		fi
+		
+		# Show first and last few characters for debugging
+		first_chars=$(head -c 10 "$COMPOSER" | od -c | head -n 1)
+		last_chars=$(tail -c 10 "$COMPOSER" | od -c | head -n 1)
+		echo "Debug: First chars: $first_chars"
+		echo "Debug: Last chars: $last_chars"
+		
 		# Remove all whitespace and check basic structure
 		content=$(tr -d '[:space:]' < "$COMPOSER")
 		
+		# Show what we got after removing whitespace
+		echo "Debug: Content starts with: $(echo "$content" | head -c 5)"
+		echo "Debug: Content ends with: $(echo "$content" | tail -c 5)"
+		
 		# Must start with { or [ and end with } or ]
-		if [[ ! "$content" =~ ^[\{\[] ]] || [[ ! "$content" =~ [\}\]]$ ]]; then
-			echo "JSON Error: File must start with { or [ and end with } or ]"
+		if [[ ! "$content" =~ ^[\{\[] ]]; then
+			echo "JSON Error: File must start with { or [ (found: $(echo "$content" | head -c 1))"
+			exit 1
+		fi
+		
+		if [[ ! "$content" =~ [\}\]]$ ]]; then
+			echo "JSON Error: File must end with } or ] (found: $(echo "$content" | tail -c 1))"
 			exit 1
 		fi
 		
@@ -105,7 +126,7 @@ if [[ -s "$COMPOSER" ]]; then
 		close_brackets=$(echo "$content" | grep -o '\]' | wc -l)
 		
 		if [[ $open_braces -ne $close_braces ]] || [[ $open_brackets -ne $close_brackets ]]; then
-			echo "JSON Error: Mismatched braces or brackets"
+			echo "JSON Error: Mismatched braces or brackets (braces: ${open_braces}/${close_braces}, brackets: ${open_brackets}/${close_brackets})"
 			exit 1
 		fi
 		
