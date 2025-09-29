@@ -14,21 +14,11 @@ ignore_config_vars=("IFS" "HOME" "PATH" "CPATH" "CPPATH" "LD_PRELOAD" "LIBRARY_P
 
 STACK=${STACK:-heroku-22} # Anvil has none
 build_dir=$1
-cache_dir=$2
-php_cache_dir="$cache_dir/php"
-mkdir -p "$php_cache_dir"
+cache_dir=$2/php
+mkdir -p "$cache_dir"
 env_dir=${3:-} # Anvil has none
 bp_dir=$(cd $(dirname $0); cd ..; pwd)
 
-# Initialise the build report data store. We do this first to ensure the data store from the previous
-# build is still reset if the build fails due to an internal error when importing other modules.
-source "$bp_dir/bin/util/build_report.sh"
-build_report::setup
-declare -A start_times
-
-start_times[__main__]=$(build_report::current_unix_realtime)
-
-# TODO: Remove these and the mcount/... utils in common.sh once all consumers are converted to `build_report::*`.
 export BPLOG_PREFIX="buildpack.php"
 export BUILDPACK_LOG_FILE=${BUILDPACK_LOG_FILE:-/dev/null}
 ignore_config_vars+=("BPLOG_PREFIX" "BUILDPACK_LOG_FILE")
@@ -96,7 +86,7 @@ composer_lock_parse_error=$(
 
 # a bunch of sanity checks first
 if [[ -s "$COMPOSER" ]]; then
-	cat "$COMPOSER" | python3 -mjson.tool &> /dev/null || {
+	cat "$COMPOSER" | python3 -mjson.tool 2>&1 || {
 		mcount "failures.composer_json.lint"
 		error <<-EOF
 			Basic validation for '$COMPOSER' failed!
@@ -234,7 +224,7 @@ mkdir $build_dir/.heroku/php || {
 	EOF
 }
 # set up Composer
-export COMPOSER_HOME=$php_cache_dir/.composer
+export COMPOSER_HOME=$cache_dir/.composer
 # $COMPOSER_HOME/cache is the default, but we want to be explicit
 export COMPOSER_CACHE_DIR=$COMPOSER_HOME/cache
 mkdir -p $COMPOSER_CACHE_DIR
@@ -243,8 +233,6 @@ ignore_config_vars+=("COMPOSER_(CACHE_DIR|HOME|NO_INTERACTION)")
 
 # if the build dir is not "/app", we symlink in the .heroku/php subdir (and only that, to avoid problems with other buildpacks) so that PHP correctly finds its INI files etc
 [[ $build_dir == '/app' ]] || ln -s $build_dir/.heroku/php /app/.heroku/php
-
-start_times[bootstrap]=$(build_report::current_unix_realtime)
 
 status "Bootstrapping..."
 
@@ -285,7 +273,7 @@ fi
 mkdir -p $build_dir/.heroku/php-min
 ln -s $build_dir/.heroku/php-min /app/.heroku/php-min
 
-curl_retry_on_18 --retry-connrefused --retry 3 --connect-timeout 10 --fail --silent --location -o $build_dir/.heroku/php-min.tar.gz "${s3_url}php-min-8.3.25.tar.gz" || {
+curl_retry_on_18 --retry-connrefused --retry 3 --connect-timeout 10 --fail --silent --location -o $build_dir/.heroku/php-min.tar.gz "${s3_url}php-min-8.3.24.tar.gz" || {
 	mcount "failures.bootstrap.download.php-min"
 	error <<-EOF
 		Failed to download minimal PHP for bootstrapping!
@@ -298,7 +286,7 @@ curl_retry_on_18 --retry-connrefused --retry 3 --connect-timeout 10 --fail --sil
 tar xzf $build_dir/.heroku/php-min.tar.gz -C $build_dir/.heroku/php-min
 rm $build_dir/.heroku/php-min.tar.gz
 
-curl_retry_on_18 --retry-connrefused --retry 3 --connect-timeout 10 --fail --silent --location -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.11.tar.gz" || {
+curl_retry_on_18 --retry-connrefused --retry 3 --connect-timeout 10 --fail --silent --location -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.10.tar.gz" || {
 	mcount "failures.bootstrap.download.composer"
 	error <<-EOF
 		Failed to download Composer for bootstrapping!
@@ -342,8 +330,6 @@ platform-composer() {
 	/app/.heroku/php-min/bin/php /app/.heroku/php-min/bin/composer -d "${build_dir}/.heroku/php" "$@"
 }
 export -f platform-composer
-
-build_report::set_duration bootstrap.duration "${start_times[bootstrap]}"
 
 mkdir -p $build_dir/.profile.d
 
@@ -423,8 +409,6 @@ platform-composer validate --no-plugins --no-check-publish --no-check-all --quie
 	EOF
 }
 
-start_times[platform.prepare]=$(build_report::current_unix_realtime)
-
 status "Preparing platform package installation..."
 
 HEROKU_PHP_DEFAULT_RUNTIME_VERSION="^8.1.0 <8.5"
@@ -465,13 +449,7 @@ export HEROKU_PHP_DEFAULT_RUNTIME_VERSION
 	fi
 }
 
-build_report::set_duration platform.prepare.duration "${start_times[platform.prepare]}"
-
-start_times[platform.install]=$(build_report::current_unix_realtime)
-
 status "Installing platform packages..."
-
-start_times[platform.install.main]=$(build_report::current_unix_realtime)
 
 # providedextensionslog_file_path is used to record packages that provide native extensions for this one install step only
 export providedextensionslog_file_path=$(mktemp -t "provided-extensions.log.XXXXXX" -u)
@@ -543,8 +521,8 @@ else
 		For reference, the following runtimes are currently available:
 		
 		PHP: $(
-			platform-composer show -f json --available heroku-sys/php |
-			jq -r '.versions | join(", ")' |
+			platform-composer show --available heroku-sys/php 2>&1 |
+			sed -n 's/^versions : //p' | # composer lists them like "versions : 1.2.3, 1.2.4"
 			fold -b -s -w 59 | # 59 characters at a time, wrap on whitespace
 			indent -i5 --no-first-line-indent || true # indent all lines except first to line up with "PHP: "
 		)
@@ -562,21 +540,8 @@ else
 	EOF
 fi
 
-# log number of platform packages installed based on the packages and requirements we assembled
-# this includes composer and web servers, but may not include extensions skipped due to the presence of polyfill packages
-# if there are no packages, 'composer show -f json' returns an empty array instead of an object with empty "installed" key
-platform_packages_installed_count=$(platform-composer show -f json "heroku-sys/*" | jq -r '.installed? // {} | length' || printf -- "-1")
-build_report::set_raw platform.install.main.packages.installed_count "$platform_packages_installed_count"
-
-build_report::set_duration platform.install.main.duration "${start_times[platform.install.main]}"
-
 export -n providedextensionslog_file_path # export no longer needed (and we don't want more entries written by the plugin even if it encounters them)
-declare -i polyfill_count=0
 if [[ -s "$providedextensionslog_file_path" ]]; then
-	start_times[platform.install.polyfill_replacement]=$(build_report::current_unix_realtime)
-	declare -i polyfill_replacement_attempted_count=0
-	declare -i polyfill_replacement_succeeded_count=0
-	declare -a polyfill_replacement_unavailable=()
 	notice_inline "detected userland polyfill packages for PHP extensions"
 	notice_inline "now attempting to install native extension packages"
 	# the platform installer recorded userland packages that "provide" a PHP extension
@@ -584,49 +549,21 @@ if [[ -s "$providedextensionslog_file_path" ]]; then
 	# we will now attempt to install the real native extension packages (rest of the line)
 	# this isolated install will not change anything else about the existing dependency graph
 	while read -r -u "$fd_num" line; do # $fd_num comes from the end of the loop
-		(( ++polyfill_count ))
 		read -r -a provides <<< "$line" # read words of line into array
 		echo "- Installing extensions provided by ${provides[0]}..." | indent # first "word" is userland package name
 		for extension in "${provides[@]:1}"; do # remaining words in line are native extensions it declares "provide"d
-			(( ++polyfill_replacement_attempted_count ))
 			ext_package=$(cut -d":" -f1 <<< "$extension") # extract name from "ext-foo:1.2.3" string
 			ext_name=${ext_package#"heroku-sys/"} # no "heroku-sys/" prefix for human output
 			# run a `composer require`, confined to the package we're attempting, allowing any version
 			#   (the .native "replace"d variant in each extension matches the regular version, so the constraint for that regular version is enough)
 			if ! PHP_PLATFORM_INSTALLER_DISPLAY_OUTPUT_INDENT=9 platform-composer require "${ext_package}.native:*" >> $build_dir/.heroku/php/install.log 2>&1; then
-				polyfill_replacement_unavailable+=("$ext_name")
 				# composer did not succeed; this means no package that matches all existing package's requirements was found
 				notice_inline -i9 "no suitable native version of ${ext_name} available"
-			else
-				(( ++polyfill_replacement_succeeded_count ))
 			fi
 		done
 	done {fd_num}< "$providedextensionslog_file_path" # use bash 4.1+ automatic file descriptor allocation (better than hardcoding e.g. "3<"), otherwise this loop's stdin (the lines of the file) will be consumed by programs called inside the loop
 	exec {fd_num}>&-
-	build_report::set_duration platform.install.polyfill_replacement.duration "${start_times[platform.install.polyfill_replacement]}"
-	# the number of native packages we tried to install because a polyfill initially caused them to get skipped
-	build_report::set_raw platform.install.polyfill_replacement.packages.attempted_count "$polyfill_replacement_attempted_count"
-	# the number of successful native installs - this can also mean an ext was already enabled in PHP, or only had to be enabled
-	build_report::set_raw platform.install.polyfill_replacement.packages.succeeded_count "$polyfill_replacement_succeeded_count"
-	if (( ${#polyfill_replacement_unavailable[@]} )); then
-		# the list of unsuccessful native installs (because package not available or conflicting)
-		# sort names into a new array (sort -z and mapfile -d '' for NUL byte separator handling)
-		mapfile -td '' polyfill_replacement_unavailable_sorted < <(printf '%s\0' "${polyfill_replacement_unavailable[@]}" | sort -z)
-		# log names as comma-separated list (the "*" array expansion uses the first character from IFS, which is what we want)
-		build_report::set_string platform.install.polyfill_replacement.packages.unavailable "$(IFS=,; echo "${polyfill_replacement_unavailable_sorted[*]}")"
-	fi
-	# the number of actual packages we installed - "real" download/installs, possibly in turn with dependencies to pull in first
-	# back up the count of installed packages from the previous step
-	platform_packages_installed_count_previous=$platform_packages_installed_count
-	# set the new grand total (will be logged again further down) to what we have now
-	# if there are no packages, 'composer show -f json' returns an empty array instead of an object with empty "installed" key
-	platform_packages_installed_count=$(platform-composer show -f json "heroku-sys/*" | jq -r '.installed? // {} | length' || printf -- "-1")
-	# log the difference between the two as the count for this step
-	build_report::set_raw platform.install.polyfill_replacement.packages.installed_count "$(( platform_packages_installed_count - platform_packages_installed_count_previous ))"
 fi
-# the number of polyfill packages we saw (i.e. packages declaring they are filling in for one or more e.g. extensions)
-# we want this always logged, so it is outside the if above
-build_report::set_raw platform.polyfill_count "$polyfill_count"
 
 # clean up installer variables and files
 rm -f "$providedextensionslog_file_path"
@@ -636,9 +573,8 @@ unset providedextensionslog_file_path
 exec {PHP_PLATFORM_INSTALLER_DISPLAY_OUTPUT_FDNO}>&-
 unset PHP_PLATFORM_INSTALLER_DISPLAY_OUTPUT_FDNO
 
-# log total number of installed platform packages (user deps, polyfill replacements, composer, web servers)
-# this variable may have been updated by the polyfill replacement step
-build_report::set_raw platform.packages.installed_count "$platform_packages_installed_count"
+# log number of installed platform packages
+mmeasure "platform.count" $(platform-composer show --installed "heroku-sys/*" 2> /dev/null | wc -l)
 
 # export our "do not auto.start APM extensions" magic INI directory to PHP_INI_SCAN_DIR for ourself and for later buildpacks (but not for runtime)
 # but first, there might be a user-supplied scan dir we have to take into account, so load that config var
@@ -662,12 +598,8 @@ source $bp_dir/export
 
 # from here onwards we're using the composer we installed via platform install with the PHP runtime that we installed via platform install
 
-# log runtime version and series
-php_version=($(php -r 'printf("%s\n%d.%d", PHP_VERSION, PHP_MAJOR_VERSION, PHP_MINOR_VERSION);'))
-build_report::set_string platform.php.version "${php_version[0]}"
-build_report::set_string platform.php.series "${php_version[1]}"
-
-build_report::set_duration platform.install.duration "${start_times[platform.install]}"
+# log runtime version
+mcount "platform.packages.php.$(php -r "echo PHP_VERSION;")"
 
 if eoldate=$(php $bp_dir/bin/util/eol.php); then
 	:
@@ -728,8 +660,6 @@ else
 		EOF
 	fi
 fi
-
-start_times[dependencies.install]=$(build_report::current_unix_realtime)
 
 status "Installing dependencies..."
 
@@ -830,7 +760,7 @@ fi
 
 # only perform the check for buildpack package if we're not running in Heroku CI
 if [[ -z "${HEROKU_PHP_INSTALL_DEV+are-we-running-in-ci}" ]]; then
-	composer show --quiet heroku/heroku-buildpack-php 2>/dev/null && {
+	composer show --installed heroku/heroku-buildpack-php &> /dev/null && {
 		mcount "failures.dependencies.buildpack_as_dependency"
 		error <<-EOF
 			Package 'heroku/heroku-buildpack-php' found!
@@ -851,15 +781,10 @@ if [[ -z "${HEROKU_PHP_INSTALL_DEV+are-we-running-in-ci}" ]]; then
 	}
 fi
 
-build_report::set_duration dependencies.install.duration "${start_times[dependencies.install]}"
-
 # log number of installed dependencies
-# if there are no packages, 'composer show -f json' returns an empty array instead of an object with empty "installed" key
-build_report::set_raw dependencies.packages.installed_count "$(composer show --no-plugins -f json | jq -r '.installed? // {} | length' || printf -- "-1")"
+mmeasure "dependencies.count" $(composer show --installed 2> /dev/null | wc -l)
 
 if cat "$COMPOSER" | python3 -c 'import sys,json; sys.exit("compile" not in json.load(sys.stdin).get("scripts", {}));'; then
-	start_times[scripts.compile]=$(build_report::current_unix_realtime)
-	
 	status "Running 'composer compile'..."
 	composer run-script ${HEROKU_PHP_INSTALL_DEV-"--no-dev"} --no-interaction compile 2>&1 | indent || {
 		mcount "failures.compile_step"
@@ -878,8 +803,6 @@ if cat "$COMPOSER" | python3 -c 'import sys,json; sys.exit("compile" not in json
 			https://devcenter.heroku.com/articles/php-support
 		EOF
 	}
-	
-	build_report::set_duration scripts.compile.duration "${start_times[scripts.compile]}"
 fi
 
 status "Preparing runtime environment..."
@@ -913,8 +836,6 @@ fi
 
 # unless we're running a CI build...
 if [[ "${HEROKU_PHP_INSTALL_DEV+CI}" != "CI" ]]; then
-	start_times[apm.automagic]=$(build_report::current_unix_realtime)
-	
 	# see if we want to auto-enable blackfire and newrelic extensions
 	# we do this at the end because even with our apm ext "do not start" overrides via PHP_INI_SCAN_DIR,
 	# there can still be startup messages that clobber output during userland composer install etc
@@ -930,11 +851,7 @@ if [[ "${HEROKU_PHP_INSTALL_DEV+CI}" != "CI" ]]; then
 	# final FD cleanup so nothing after us can inherit it for any reason
 	exec {PHP_PLATFORM_INSTALLER_DISPLAY_OUTPUT_FDNO}>&-
 	unset PHP_PLATFORM_INSTALLER_DISPLAY_OUTPUT_FDNO
-	
-	build_report::set_duration apm.automagic.duration "${start_times[apm.automagic]}"
 fi
 
 # clean up our bootstrapped PHP and Composer
 rm -rf /app/.heroku/php-min $build_dir/.heroku/php-min
-
-build_report::set_duration duration "${start_times[__main__]}"

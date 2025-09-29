@@ -3,38 +3,6 @@
 ## [Unreleased]
 
 
-## [v274] - 2025-09-19
-
-### FIX
-
-- Faulty Composer plugins printing to stdout during activation may cause build failures [David Zuelke]
-
-## [v273] - 2025-09-04
-
-### ADD
-
-- PHP/8.3.25 [David Zuelke]
-- PHP/8.4.12 [David Zuelke]
-- ext-newrelic/12.0.0.25 [David Zuelke]
-- ext-apcu/5.1.27 [David Zuelke]
-- ext-raphf/2.0.2 [David Zuelke]
-- ext-blackfire/1.92.42 [David Zuelke]
-
-### CHG
-
-- librdkafka/2.11.1 [David Zuelke]
-- Composer/2.8.11 [David Zuelke]
-- blackfire/2.29.0 [David Zuelke]
-
-## [v272] - 2025-09-02
-
-### CHG
-
-- Add new internal data store for capturing measurements at build time [Ed Morley]
-- Record basic measurements about the build (number of dependencies, PHP versions) and make them available for consumption by a build system via bin/report [David Zuelke]
-- Record durations of relevant build steps for bin/report [David Zuelke]
-- Record stats about polyfill replacement operations during platform install for bin/report [David Zuelke]
-
 ## [v271] - 2025-07-31
 
 ### ADD
@@ -2997,10 +2965,7 @@
 
 - Auto-set and follow (but not enable, for now) the FPM slowlog [David Zuelke]
 
-[unreleased]: https://github.com/heroku/heroku-buildpack-php/compare/v274...main
-[v274]: https://github.com/heroku/heroku-buildpack-php/compare/v273...v274
-[v273]: https://github.com/heroku/heroku-buildpack-php/compare/v272...v273
-[v272]: https://github.com/heroku/heroku-buildpack-php/compare/v271...v272
+[unreleased]: https://github.com/heroku/heroku-buildpack-php/compare/v271...main
 [v271]: https://github.com/heroku/heroku-buildpack-php/compare/v270...v271
 [v270]: https://github.com/heroku/heroku-buildpack-php/compare/v269...v270
 [v269]: https://github.com/heroku/heroku-buildpack-php/compare/v268...v269
