@@ -471,28 +471,48 @@ echo "       PHP binary dependencies:"
 ldd /app/.heroku/php-min/bin/php 2>/dev/null | grep -E "(readline|not found)" || echo "       Could not determine dependencies"
 
 # Create compatibility symlinks for RHEL7
-if [[ -f /usr/lib64/libreadline.so.6 ]] && [[ ! -f /usr/lib64/libreadline.so.8 ]]; then
-	echo "       Creating libreadline compatibility symlink..."
-	ln -sf /usr/lib64/libreadline.so.6 /app/.heroku/php-min/lib/libreadline.so.8 2>/dev/null || echo "       Failed to create symlink"
-fi
+mkdir -p /app/.heroku/php-min/lib
 
-# Try alternative library locations
-for lib_dir in /usr/lib64 /usr/lib /lib64 /lib; do
-	if [[ -f "$lib_dir/libreadline.so.6" ]] && [[ ! -f /app/.heroku/php-min/lib/libreadline.so.8 ]]; then
-		echo "       Linking libreadline from $lib_dir..."
-		mkdir -p /app/.heroku/php-min/lib
-		ln -sf "$lib_dir/libreadline.so.6" /app/.heroku/php-min/lib/libreadline.so.8 2>/dev/null || true
-		# Also try history library if needed
-		[[ -f "$lib_dir/libhistory.so.6" ]] && ln -sf "$lib_dir/libhistory.so.6" /app/.heroku/php-min/lib/libhistory.so.8 2>/dev/null || true
-		break
-	fi
-done
+# Function to create library symlinks
+create_lib_symlink() {
+	local old_lib="$1"
+	local new_lib="$2"
+	local lib_name="$3"
+	
+	for lib_dir in /usr/lib64 /usr/lib /lib64 /lib; do
+		if [[ -f "$lib_dir/$old_lib" ]]; then
+			echo "       Linking $lib_name from $lib_dir/$old_lib -> $new_lib"
+			ln -sf "$lib_dir/$old_lib" "/app/.heroku/php-min/lib/$new_lib" 2>/dev/null || true
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Create symlinks for missing libraries detected in ldd output
+create_lib_symlink "libreadline.so.6" "libreadline.so.8" "readline"
+create_lib_symlink "libreadline.so.6.2" "libreadline.so.8" "readline (v6.2)" || true
+create_lib_symlink "libhistory.so.6" "libhistory.so.8" "history" || true
+
+# SSL libraries (RHEL7 has older versions)
+create_lib_symlink "libssl.so.1.0.0" "libssl.so.3" "SSL v1.0" || create_lib_symlink "libssl.so.10" "libssl.so.3" "SSL v10" || true
+create_lib_symlink "libcrypto.so.1.0.0" "libcrypto.so.3" "crypto v1.0" || create_lib_symlink "libcrypto.so.10" "libcrypto.so.3" "crypto v10" || true
+
+# ZIP libraries
+create_lib_symlink "libzip.so.2" "libzip.so.4" "zip v2" || create_lib_symlink "libzip.so.1" "libzip.so.4" "zip v1" || true
 
 # Test if PHP works now
 echo "       Testing PHP binary..."
-if ! LD_LIBRARY_PATH="/app/.heroku/php-min/lib:$LD_LIBRARY_PATH" /app/.heroku/php-min/bin/php --version >/dev/null 2>&1; then
-	echo "       WARNING: PHP binary still has issues, trying without readline..."
-	# If still failing, we might need to rebuild PHP or use different approach
+export LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}"
+if ! /app/.heroku/php-min/bin/php --version >/dev/null 2>&1; then
+	echo "       WARNING: PHP binary still has library issues"
+	echo "       Missing libraries detected, will try to continue anyway..."
+	
+	# Show what we tried to link
+	echo "       Created symlinks:"
+	ls -la /app/.heroku/php-min/lib/ 2>/dev/null || echo "       No symlinks directory found"
+else
+	echo "       PHP binary is working!"
 fi
 
 curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.10.tar.gz" || {
@@ -579,7 +599,7 @@ platform-composer validate --no-plugins --no-check-publish --no-check-all --quie
 }
 
 # if prefer-stable is false and minimum-stability is not stable, warn about potential unstable platform installs
-[[ ! -f "$COMPOSER_LOCK" ]] || minimum_stability=$(LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
+[[ ! -f "$COMPOSER_LOCK" ]] || minimum_stability=$(env LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$COMPOSER_LOCK'), true);
 	\$min_stability = \$json['minimum-stability'] ?? 'stable';
 	echo \$min_stability;
@@ -631,7 +651,7 @@ status "Preparing platform package installation..."
 HEROKU_PHP_DEFAULT_RUNTIME_VERSION="^8.1.0 <8.5"
 export HEROKU_PHP_DEFAULT_RUNTIME_VERSION
 # extract requirements from composer.lock
-LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php $bp_dir/bin/util/platform.php ${have_custom_platform_repos:+"--list-repositories"} "$bp_dir/support/installer/" $HEROKU_PHP_PLATFORM_REPOSITORIES 2>&1 >$build_dir/.heroku/php/composer.json | indent || {
+env LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php $bp_dir/bin/util/platform.php ${have_custom_platform_repos:+"--list-repositories"} "$bp_dir/support/installer/" $HEROKU_PHP_PLATFORM_REPOSITORIES 2>&1 >$build_dir/.heroku/php/composer.json | indent || {
 	code=$?
 	if (( code == 3 )); then
 		mcount "failures.platform.composer_lock.runtime_only_in_dev"
@@ -943,7 +963,7 @@ ignore_config_vars=$(IFS="|"; echo -n "${ignore_config_vars[*]}")
 # export config vars, except those we do not want to clobber our environment
 export_env_dir "$env_dir" '^[A-Z_][A-Z0-9_]*$' "^(${ignore_config_vars})$"
 # install dependencies unless composer.json is completely empty (in which case it'd talk to packagist.org which may be slow and is unnecessary)
-if LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
+if env LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$COMPOSER'), true);
 	\$empty = empty(\$json);
 	exit(\$empty ? 1 : 0);
@@ -1005,7 +1025,7 @@ fi
 # log number of installed dependencies
 mmeasure "dependencies.count" $(composer show --installed 2> /dev/null | wc -l)
 
-if LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
+if env LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$COMPOSER'), true);
 	\$has_compile = isset(\$json['scripts']['compile']);
 	exit(\$has_compile ? 0 : 1);
@@ -1037,7 +1057,7 @@ status "Preparing runtime environment..."
 # TODO: warn if require-dev has the package using a different branch
 shopt -u dotglob # we don't want .git, .gitignore et al
 # figure out the package dir name to write to and copy to it
-hbpdir="$composer_vendordir/$(LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
+hbpdir="$composer_vendordir/$(env LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$bp_dir/composer.json'), true);
 	echo \$json['name'];
 ")"
@@ -1046,7 +1066,7 @@ cp -r "$bp_dir"/* "$build_dir/$hbpdir/"
 # make bin dir, just in case
 mkdir -p "$build_dir/$composer_bindir"
 # figure out shortest relative path from vendor/heroku/heroku-buildpack-php to vendor/bin (or whatever the bin dir is)
-relbin=$(LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
+relbin=$(env LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
 	function getRelativePath(\$from, \$to) {
 		\$from = explode('/', trim(\$from, '/'));
 		\$to = explode('/', trim(\$to, '/'));
@@ -1070,7 +1090,7 @@ relbin=$(LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.h
 	echo getRelativePath('$composer_bindir', '$hbpdir');
 ")
 # collect bin names from composer.json
-relbins=$(LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
+relbins=$(env LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}" /app/.heroku/php-min/bin/php -r "
 	\$json = json_decode(file_get_contents('$bp_dir/composer.json'), true);
 	\$relbin = '$relbin';
 	foreach(\$json['bin'] as \$bin) {
