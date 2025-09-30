@@ -444,30 +444,33 @@ else
 fi
 
 php_min_url=""
+curl_temp_file="$build_dir/.heroku/curl_temp.txt"
 for version in "${php_versions[@]}"; do
 	test_url="${s3_url}php-min-${version}.tar.gz"
 	echo "       Testing PHP version: $version"
 	echo "       DEBUG: Full URL: $test_url"
 	
 	# Try HEAD request with detailed error output
-	# Temporarily allow command to fail (set +e) to capture output
+	# Use temporary file to avoid command substitution issues
 	set +e
-	curl_output=$(curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$test_url" 2>&1)
+	curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$test_url" > "$curl_temp_file" 2>&1
 	curl_exit=$?
 	set -e
 	
 	if [[ $curl_exit -eq 0 ]]; then
 		echo "       ✓ Found available version: $version"
 		echo "       DEBUG: HTTP response:"
-		echo "$curl_output" | head -5 | sed 's/^/       DEBUG:   /'
+		head -5 "$curl_temp_file" | sed 's/^/       DEBUG:   /' || true
 		php_min_url="$test_url"
+		rm -f "$curl_temp_file"
 		break
 	else
 		echo "       ✗ Not available (curl exit code: $curl_exit)"
 		echo "       DEBUG: Error output:"
-		echo "$curl_output" | head -3 | sed 's/^/       DEBUG:   /'
+		head -3 "$curl_temp_file" | sed 's/^/       DEBUG:   /' || true
 	fi
 done
+rm -f "$curl_temp_file"
 
 if [[ -z "$php_min_url" ]]; then
 	# List what's actually available in the repository
@@ -475,10 +478,12 @@ if [[ -z "$php_min_url" ]]; then
 	echo "       DEBUG: Attempting to list S3 bucket contents:"
 	
 	list_url="${s3_url%/}"  # Remove trailing slash if present
+	list_temp_file="$build_dir/.heroku/list_temp.txt"
 	set +e
-	list_output=$(curl --connect-timeout 10 --silent --tlsv1.2 --insecure "$list_url" 2>&1 | head -50)
+	curl --connect-timeout 10 --silent --tlsv1.2 --insecure "$list_url" > "$list_temp_file" 2>&1
 	set -e
-	echo "$list_output" | sed 's/^/       DEBUG:   /'
+	head -50 "$list_temp_file" | sed 's/^/       DEBUG:   /' || true
+	rm -f "$list_temp_file"
 	
 	# Fallback to default if nothing found
 	if [[ $STACK == "cedar-14" ]] || [[ $STACK == "rhel7" ]]; then
