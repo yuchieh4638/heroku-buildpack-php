@@ -427,8 +427,36 @@ fi
 mkdir -p $build_dir/.heroku/php-min
 ln -s $build_dir/.heroku/php-min /app/.heroku/php-min
 
-# Download PHP for bootstrapping
-php_min_url="${s3_url}php-min-8.3.24.tar.gz"  
+# Download PHP for bootstrapping - version depends on stack
+if [[ $STACK == "cedar-14" ]] || [[ $STACK == "rhel7" ]]; then
+	# Cedar-14/RHEL7 only has PHP 7.x and early 8.x
+	# Try PHP 7.4 first (most stable and widely available on cedar-14)
+	php_versions=("7.4.33" "7.3.33" "7.2.34" "8.0.30" "8.1.29")
+else
+	# Modern stacks (heroku-22, heroku-24) have PHP 8.1+
+	php_versions=("8.3.24" "8.3.25" "8.2.29" "8.1.33")
+fi
+
+php_min_url=""
+for version in "${php_versions[@]}"; do
+	test_url="${s3_url}php-min-${version}.tar.gz"
+	echo "       Testing PHP version: $version"
+	if curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$test_url" > /dev/null 2>&1; then
+		echo "       ✓ Found available version: $version"
+		php_min_url="$test_url"
+		break
+	fi
+done
+
+if [[ -z "$php_min_url" ]]; then
+	# Fallback to default if nothing found
+	if [[ $STACK == "cedar-14" ]] || [[ $STACK == "rhel7" ]]; then
+		php_min_url="${s3_url}php-min-7.4.33.tar.gz"
+	else
+		php_min_url="${s3_url}php-min-8.3.24.tar.gz"
+	fi
+	echo "       Using fallback PHP version from URL: $php_min_url"
+fi  
 curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/php-min.tar.gz "$php_min_url" || {
 	mcount "failures.bootstrap.download.php-min"
 	error <<-EOF
