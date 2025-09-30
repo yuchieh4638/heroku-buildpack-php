@@ -450,8 +450,11 @@ for version in "${php_versions[@]}"; do
 	echo "       DEBUG: Full URL: $test_url"
 	
 	# Try HEAD request with detailed error output
+	# Temporarily allow command to fail (set +e) to capture output
+	set +e
 	curl_output=$(curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$test_url" 2>&1)
 	curl_exit=$?
+	set -e
 	
 	if [[ $curl_exit -eq 0 ]]; then
 		echo "       ✓ Found available version: $version"
@@ -472,7 +475,9 @@ if [[ -z "$php_min_url" ]]; then
 	echo "       DEBUG: Attempting to list S3 bucket contents:"
 	
 	list_url="${s3_url%/}"  # Remove trailing slash if present
+	set +e
 	list_output=$(curl --connect-timeout 10 --silent --tlsv1.2 --insecure "$list_url" 2>&1 | head -50)
+	set -e
 	echo "$list_output" | sed 's/^/       DEBUG:   /'
 	
 	# Fallback to default if nothing found
