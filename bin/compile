@@ -366,19 +366,34 @@ ignore_config_vars+=("COMPOSER_(CACHE_DIR|HOME|NO_INTERACTION)")
 
 status "Bootstrapping..."
 
-# Fix architecture detection for older systems
+# Stack locator for download URLs
 if [[ $STACK == "heroku-22" ]] || [[ $STACK == "heroku-24" ]]; then
 	stack_locator=$STACK
+elif [[ $STACK == "cedar-14" ]] || [[ $STACK == "rhel7" ]]; then
+	# RHEL7 and cedar-14 don't need architecture suffix
+	stack_locator="cedar-14"
 else
-	# Get architecture safely, with fallback
-	arch=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
-	# Clean up any weird output from dpkg
-	arch=$(echo "$arch" | tr -d '[:space:]' | grep -o '^[a-z0-9]*' | head -1)
-	if [[ -z "$arch" ]] || [[ "$arch" == *"Version"* ]] || [[ "$arch" == *":"* ]]; then
+	# Get architecture for other stacks
+	if command -v dpkg &> /dev/null; then
+		# Ubuntu/Debian
+		arch=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+	elif command -v rpm &> /dev/null; then
+		# RHEL/CentOS - convert to dpkg naming
+		machine=$(uname -m)
+		case "$machine" in
+			x86_64) arch="amd64" ;;
+			aarch64) arch="arm64" ;;
+			*) arch="amd64" ;;
+		esac
+	else
 		arch="amd64"  # Safe fallback
 	fi
+	# Clean up any weird output
+	arch=$(echo "$arch" | tr -d '[:space:]' | grep -o '^[a-z0-9]*' | head -1)
+	if [[ -z "$arch" ]] || [[ "$arch" == *"Version"* ]] || [[ "$arch" == *":"* ]]; then
+		arch="amd64"
+	fi
 	stack_locator="${STACK}-${arch}"
-	echo "-----> Using stack locator: $stack_locator"
 fi
 s3_url="https://lang-php.s3.us-east-1.amazonaws.com/dist-${stack_locator}-stable/"
 # hash the list of "declared" build formulae, this is the "snapshot" of a fixed repo state
