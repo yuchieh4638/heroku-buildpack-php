@@ -468,7 +468,11 @@ find /usr/lib* /lib* -name "*readline*" 2>/dev/null | head -10 || echo "       N
 
 # Check what the PHP binary needs
 echo "       PHP binary dependencies:"
-ldd /app/.heroku/php-min/bin/php 2>/dev/null | grep -E "(readline|not found)" || echo "       Could not determine dependencies"
+ldd /app/.heroku/php-min/bin/php 2>/dev/null | grep -E "(not found|lib.*\.so)" || echo "       Could not determine dependencies"
+
+# Check what zip libraries are available
+echo "       Available zip libraries:"
+find /usr/lib* /lib* -name "*zip*" 2>/dev/null | grep -v "\.py" | head -10 || echo "       None found in standard locations"
 
 # Create compatibility symlinks for RHEL7
 mkdir -p /app/.heroku/php-min/lib
@@ -498,21 +502,37 @@ create_lib_symlink "libhistory.so.6" "libhistory.so.8" "history" || true
 create_lib_symlink "libssl.so.1.0.0" "libssl.so.3" "SSL v1.0" || create_lib_symlink "libssl.so.10" "libssl.so.3" "SSL v10" || true
 create_lib_symlink "libcrypto.so.1.0.0" "libcrypto.so.3" "crypto v1.0" || create_lib_symlink "libcrypto.so.10" "libcrypto.so.3" "crypto v10" || true
 
-# ZIP libraries
-create_lib_symlink "libzip.so.2" "libzip.so.4" "zip v2" || create_lib_symlink "libzip.so.1" "libzip.so.4" "zip v1" || true
+# ZIP libraries (try multiple versions common on RHEL7)
+create_lib_symlink "libzip.so.5" "libzip.so.4" "zip v5" || \
+create_lib_symlink "libzip.so.2" "libzip.so.4" "zip v2" || \
+create_lib_symlink "libzip.so.1" "libzip.so.4" "zip v1" || \
+create_lib_symlink "libzip.so.0" "libzip.so.4" "zip v0" || {
+	echo "       WARNING: Could not find any libzip library to link"
+	# Try to install libzip if possible (this might not work in all environments)
+	echo "       Attempting to find libzip in system packages..."
+	for zip_lib in $(find /usr -name "libzip.so*" 2>/dev/null | head -5); do
+		if [[ -f "$zip_lib" ]]; then
+			echo "       Found potential zip library: $zip_lib"
+			ln -sf "$zip_lib" "/app/.heroku/php-min/lib/libzip.so.4" 2>/dev/null || true
+			break
+		fi
+	done
+}
 
 # Test if PHP works now
 echo "       Testing PHP binary..."
 export LD_LIBRARY_PATH="/app/.heroku/php-min/lib:${LD_LIBRARY_PATH:-}"
 if ! /app/.heroku/php-min/bin/php --version >/dev/null 2>&1; then
 	echo "       WARNING: PHP binary still has library issues"
-	echo "       Missing libraries detected, will try to continue anyway..."
+	echo "       Checking remaining missing libraries..."
+	ldd /app/.heroku/php-min/bin/php 2>/dev/null | grep "not found" | head -5
 	
-	# Show what we tried to link
 	echo "       Created symlinks:"
 	ls -la /app/.heroku/php-min/lib/ 2>/dev/null || echo "       No symlinks directory found"
+	
+	echo "       Continuing build despite library issues (some features may not work)..."
 else
-	echo "       PHP binary is working!"
+	echo "       ✅ PHP binary is working!"
 fi
 
 curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.10.tar.gz" || {
