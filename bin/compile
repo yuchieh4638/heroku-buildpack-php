@@ -12,6 +12,11 @@ shopt -s dotglob
 # some basic config vars we never want to export
 ignore_config_vars=("IFS" "HOME" "PATH" "CPATH" "CPPATH" "LD_PRELOAD" "LIBRARY_PATH" "LD_LIBRARY_PATH" "STACK" "REQUEST_ID" "HEROKU_PHP_INSTALL_DEV" "OLDPWD" "PWD" "DYNO")
 
+# Force minimum supported stack for compatibility
+if [[ -z "${STACK:-}" ]] || [[ "$STACK" == "cedar"* ]] || [[ "$STACK" == "heroku-1"* ]]; then
+	echo "-----> WARNING: Detected unsupported stack '$STACK', using heroku-22"
+	STACK="heroku-22"
+fi
 STACK=${STACK:-heroku-22} # Anvil has none
 build_dir=$1
 cache_dir=$2/php
@@ -362,10 +367,19 @@ ignore_config_vars+=("COMPOSER_(CACHE_DIR|HOME|NO_INTERACTION)")
 
 status "Bootstrapping..."
 
-if [[ $STACK == "heroku-22" ]]; then
+# Fix architecture detection for older systems
+if [[ $STACK == "heroku-22" ]] || [[ $STACK == "heroku-24" ]]; then
 	stack_locator=$STACK
 else
-	stack_locator="${STACK}-$(dpkg --print-architecture)"
+	# Get architecture safely, with fallback
+	arch=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+	# Clean up any weird output from dpkg
+	arch=$(echo "$arch" | tr -d '[:space:]' | grep -o '^[a-z0-9]*' | head -1)
+	if [[ -z "$arch" ]] || [[ "$arch" == *"Version"* ]] || [[ "$arch" == *":"* ]]; then
+		arch="amd64"  # Safe fallback
+	fi
+	stack_locator="${STACK}-${arch}"
+	echo "-----> Using stack locator: $stack_locator"
 fi
 s3_url="https://lang-php.s3.us-east-1.amazonaws.com/dist-${stack_locator}-stable/"
 # hash the list of "declared" build formulae, this is the "snapshot" of a fixed repo state
@@ -403,8 +417,8 @@ ln -s $build_dir/.heroku/php-min /app/.heroku/php-min
 php_min_url="${s3_url}php-min-8.3.24.tar.gz"
 echo "-----> Attempting to download PHP from: $php_min_url"
 
-# Test the URL first (with SSL compatibility for RHEL7)
-if ! curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$php_min_url" > /dev/null; then
+# Test the URL first (with SSL and HTTP compatibility for RHEL7)
+if ! curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure --http1.1 "$php_min_url" > /dev/null; then
 	echo "       WARNING: Cannot access $php_min_url"
 	echo "       Trying alternative PHP version..."
 	
@@ -412,7 +426,7 @@ if ! curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$php
 	php_min_url="${s3_url}php-min-8.3.25.tar.gz"
 	echo "       Trying: $php_min_url"
 	
-	if ! curl --connect-timeout 10 --fail --silent --head --insecure "$php_min_url" > /dev/null; then
+	if ! curl --connect-timeout 10 --fail --silent --head --insecure --http1.1 "$php_min_url" > /dev/null; then
 		echo "       WARNING: Cannot access alternative version either"
 		echo "       Debug info:"
 		echo "       Stack: $STACK"
@@ -421,12 +435,12 @@ if ! curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$php
 		
 		# Try listing what's available
 		echo "       Attempting to list available files..."
-		curl --connect-timeout 10 --silent --insecure "${s3_url}" | head -20
+		curl --connect-timeout 10 --silent --insecure --http1.1 "${s3_url}" | head -20
 	fi
 fi
 
-# Try download with SSL compatibility options for RHEL7  
-curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/php-min.tar.gz "$php_min_url" || {
+# Try download with SSL and HTTP compatibility options for RHEL7  
+curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure --http1.1 -o $build_dir/.heroku/php-min.tar.gz "$php_min_url" || {
 	mcount "failures.bootstrap.download.php-min"
 	error <<-EOF
 		Failed to download minimal PHP for bootstrapping!
@@ -447,7 +461,7 @@ curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tls
 tar xzf $build_dir/.heroku/php-min.tar.gz -C $build_dir/.heroku/php-min
 rm $build_dir/.heroku/php-min.tar.gz
 
-curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.10.tar.gz" || {
+curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure --http1.1 -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.10.tar.gz" || {
 	mcount "failures.bootstrap.download.composer"
 	error <<-EOF
 		Failed to download Composer for bootstrapping!
