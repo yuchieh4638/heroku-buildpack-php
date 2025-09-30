@@ -533,44 +533,11 @@ create_lib_symlink "libzip.so.0" "libzip.so.4" "zip v0" || {
 		fi
 	done
 	
-	# If still no libzip found, try to download a compatible version for RHEL7
+	# Note: On Ubuntu 22/heroku-22, libzip should be available from system packages
+	# The RPM download code has been removed as it's RHEL7-specific and causes issues on Ubuntu
 	if [[ ! -f "/app/.heroku/php-min/lib/libzip.so.4" ]]; then
-		echo "       Attempting to download compatible libzip for RHEL7..."
-		
-		# Try to download libzip.so.4 from a compatible source
-		# This is a RHEL7/CentOS7 compatible version
-		libzip_urls=(
-			"https://rpmfind.net/linux/centos/7/os/x86_64/Packages/libzip-0.10.1-8.el7.x86_64.rpm"
-			"http://mirror.centos.org/centos/7/os/x86_64/Packages/libzip-0.10.1-8.el7.x86_64.rpm"
-		)
-		
-		for libzip_url in "${libzip_urls[@]}"; do
-			echo "       Trying: $libzip_url"
-			if curl --connect-timeout 10 --fail --silent --location --insecure "$libzip_url" -o /tmp/libzip.rpm 2>/dev/null; then
-				echo "       Downloaded RPM, extracting..."
-				cd /tmp
-				rpm2cpio libzip.rpm | cpio -idm 2>/dev/null || true
-				
-				# Find the extracted libzip
-				if [[ -f /tmp/usr/lib64/libzip.so.1 ]]; then
-					echo "       Found libzip.so.1, linking to libzip.so.4"
-					ln -sf /tmp/usr/lib64/libzip.so.1 "/app/.heroku/php-min/lib/libzip.so.4"
-					break
-				elif [[ -f /tmp/usr/lib64/libzip.so ]]; then
-					echo "       Found libzip.so, linking to libzip.so.4"
-					ln -sf /tmp/usr/lib64/libzip.so "/app/.heroku/php-min/lib/libzip.so.4"
-					break
-				fi
-			fi
-		done
-		cd "$build_dir"
-	fi
-	
-	# Final check
-	if [[ ! -f "/app/.heroku/php-min/lib/libzip.so.4" ]]; then
-		echo "       WARNING: Could not obtain libzip.so.4"
-		echo "       PHP may fail to run - this is a known limitation on RHEL7"
-		echo "       Consider upgrading your build environment to a newer OS"
+		echo "       INFO: libzip.so.4 not found in system libraries"
+		echo "       This is normal - PHP will use the system's libzip"
 	fi
 }
 
