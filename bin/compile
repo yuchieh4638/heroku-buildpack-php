@@ -399,20 +399,55 @@ fi
 mkdir -p $build_dir/.heroku/php-min
 ln -s $build_dir/.heroku/php-min /app/.heroku/php-min
 
-curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location -o $build_dir/.heroku/php-min.tar.gz "${s3_url}php-min-8.3.24.tar.gz" || {
+# Add debugging for the download
+php_min_url="${s3_url}php-min-8.3.24.tar.gz"
+echo "-----> Attempting to download PHP from: $php_min_url"
+
+# Test the URL first (with SSL compatibility for RHEL7)
+if ! curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$php_min_url" > /dev/null; then
+	echo "       WARNING: Cannot access $php_min_url"
+	echo "       Trying alternative PHP version..."
+	
+	# Try alternative version
+	php_min_url="${s3_url}php-min-8.3.25.tar.gz"
+	echo "       Trying: $php_min_url"
+	
+	if ! curl --connect-timeout 10 --fail --silent --head --insecure "$php_min_url" > /dev/null; then
+		echo "       WARNING: Cannot access alternative version either"
+		echo "       Debug info:"
+		echo "       Stack: $STACK"
+		echo "       Stack locator: $stack_locator"
+		echo "       S3 URL base: $s3_url"
+		
+		# Try listing what's available
+		echo "       Attempting to list available files..."
+		curl --connect-timeout 10 --silent --insecure "${s3_url}" | head -20
+	fi
+fi
+
+# Try download with SSL compatibility options for RHEL7  
+curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/php-min.tar.gz "$php_min_url" || {
 	mcount "failures.bootstrap.download.php-min"
 	error <<-EOF
 		Failed to download minimal PHP for bootstrapping!
 		
+		URL attempted: $php_min_url
+		Stack: $STACK
+		Stack locator: $stack_locator
+		S3 base URL: $s3_url
+		
 		This is most likely a temporary internal error. If the problem
 		persists, make sure that you are not running a custom or forked
 		version of the Heroku PHP buildpack which may need updating.
+		
+		You might also need to check if the RHEL7 stack is still supported
+		by the latest buildpack versions.
 	EOF
 }
 tar xzf $build_dir/.heroku/php-min.tar.gz -C $build_dir/.heroku/php-min
 rm $build_dir/.heroku/php-min.tar.gz
 
-curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.10.tar.gz" || {
+curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/composer.tar.gz "${s3_url}composer-2.8.10.tar.gz" || {
 	mcount "failures.bootstrap.download.composer"
 	error <<-EOF
 		Failed to download Composer for bootstrapping!
