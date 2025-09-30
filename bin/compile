@@ -445,17 +445,17 @@ fi
 
 php_min_url=""
 curl_temp_file="$build_dir/.heroku/curl_temp.txt"
+# Temporarily disable error traps for curl tests
+trap - ERR
+set +e
 for version in "${php_versions[@]}"; do
 	test_url="${s3_url}php-min-${version}.tar.gz"
 	echo "       Testing PHP version: $version"
 	echo "       DEBUG: Full URL: $test_url"
 	
 	# Try HEAD request with detailed error output
-	# Use temporary file to avoid command substitution issues
-	set +e
 	curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$test_url" > "$curl_temp_file" 2>&1
 	curl_exit=$?
-	set -e
 	
 	if [[ $curl_exit -eq 0 ]]; then
 		echo "       ✓ Found available version: $version"
@@ -471,6 +471,9 @@ for version in "${php_versions[@]}"; do
 	fi
 done
 rm -f "$curl_temp_file"
+# Re-enable error handling
+set -e
+trap 'err_trap' ERR
 
 if [[ -z "$php_min_url" ]]; then
 	# List what's actually available in the repository
@@ -479,9 +482,11 @@ if [[ -z "$php_min_url" ]]; then
 	
 	list_url="${s3_url%/}"  # Remove trailing slash if present
 	list_temp_file="$build_dir/.heroku/list_temp.txt"
+	trap - ERR
 	set +e
 	curl --connect-timeout 10 --silent --tlsv1.2 --insecure "$list_url" > "$list_temp_file" 2>&1
 	set -e
+	trap 'err_trap' ERR
 	head -50 "$list_temp_file" | sed 's/^/       DEBUG:   /' || true
 	rm -f "$list_temp_file"
 	
