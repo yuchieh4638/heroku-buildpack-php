@@ -12,9 +12,8 @@ shopt -s dotglob
 # some basic config vars we never want to export
 ignore_config_vars=("IFS" "HOME" "PATH" "CPATH" "CPPATH" "LD_PRELOAD" "LIBRARY_PATH" "LD_LIBRARY_PATH" "STACK" "REQUEST_ID" "HEROKU_PHP_INSTALL_DEV" "OLDPWD" "PWD" "DYNO")
 
-# Force minimum supported stack for compatibility
-if [[ -z "${STACK:-}" ]] || [[ "$STACK" == "cedar"* ]] || [[ "$STACK" == "heroku-1"* ]]; then
-	echo "-----> WARNING: Detected unsupported stack '$STACK', using heroku-22"
+# Ensure we have a valid stack
+if [[ -z "${STACK:-}" ]]; then
 	STACK="heroku-22"
 fi
 STACK=${STACK:-heroku-22} # Anvil has none
@@ -413,46 +412,8 @@ fi
 mkdir -p $build_dir/.heroku/php-min
 ln -s $build_dir/.heroku/php-min /app/.heroku/php-min
 
-# Add debugging for the download
-# For RHEL7 compatibility, we may need an older PHP that doesn't require libzip.so.4
-# First try newer versions, but have fallbacks
-php_min_versions=("8.1.33" "8.2.29" "8.3.24" "8.3.25")
-php_min_url=""
-php_version_found=""
-
-echo "-----> Searching for compatible PHP version for RHEL7..."
-
-for version in "${php_min_versions[@]}"; do
-	test_url="${s3_url}php-min-${version}.tar.gz"
-	echo "       Testing: php-min-${version}.tar.gz"
-	
-	if curl --connect-timeout 10 --fail --silent --head --tlsv1.2 --insecure "$test_url" > /dev/null; then
-		echo "       ✓ Found: $version"
-		php_min_url="$test_url"
-		php_version_found="$version"
-		# Use the first version we find (prefer older = more compatible)
-		break
-	else
-		echo "       ✗ Not available: $version"
-	fi
-done
-
-if [[ -z "$php_min_url" ]]; then
-	echo "       WARNING: No compatible PHP version found"
-	echo "       Debug info:"
-	echo "       Stack: $STACK"
-	echo "       Stack locator: $stack_locator"  
-	echo "       S3 URL base: $s3_url"
-	
-	# Default to latest if nothing found
-	php_min_url="${s3_url}php-min-8.3.24.tar.gz"
-	php_version_found="8.3.24"
-fi
-
-echo "-----> Using PHP version: $php_version_found"
-echo "       Download URL: $php_min_url"
-
-# Try download with SSL compatibility options for RHEL7  
+# Download PHP for bootstrapping
+php_min_url="${s3_url}php-min-8.3.24.tar.gz"  
 curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tlsv1.2 --insecure -o $build_dir/.heroku/php-min.tar.gz "$php_min_url" || {
 	mcount "failures.bootstrap.download.php-min"
 	error <<-EOF
@@ -467,14 +428,12 @@ curl_retry_on_18 --retry 3 --connect-timeout 10 --fail --silent --location --tls
 		persists, make sure that you are not running a custom or forked
 		version of the Heroku PHP buildpack which may need updating.
 		
-		You might also need to check if the RHEL7 stack is still supported
-		by the latest buildpack versions.
+		This is most likely a temporary network issue.
 	EOF
 }
 tar xzf $build_dir/.heroku/php-min.tar.gz -C $build_dir/.heroku/php-min
 rm $build_dir/.heroku/php-min.tar.gz
 
-# Check for library compatibility issues on RHEL7
 echo "-----> Checking library compatibility..."
 echo "       Available readline libraries:"
 find /usr/lib* /lib* -name "*readline*" 2>/dev/null | head -10 || echo "       None found in standard locations"
@@ -487,7 +446,7 @@ ldd /app/.heroku/php-min/bin/php 2>/dev/null | grep -E "(not found|lib.*\.so)" |
 echo "       Available zip libraries:"
 find /usr/lib* /lib* -name "*zip*" 2>/dev/null | grep -v "\.py" | head -10 || echo "       None found in standard locations"
 
-# Create compatibility symlinks for RHEL7
+# Create compatibility symlinks if needed
 mkdir -p /app/.heroku/php-min/lib
 
 # Function to create library symlinks
@@ -511,18 +470,16 @@ create_lib_symlink "libreadline.so.6" "libreadline.so.8" "readline"
 create_lib_symlink "libreadline.so.6.2" "libreadline.so.8" "readline (v6.2)" || true
 create_lib_symlink "libhistory.so.6" "libhistory.so.8" "history" || true
 
-# SSL libraries (RHEL7 has older versions)
+# SSL libraries
 create_lib_symlink "libssl.so.1.0.0" "libssl.so.3" "SSL v1.0" || create_lib_symlink "libssl.so.10" "libssl.so.3" "SSL v10" || true
 create_lib_symlink "libcrypto.so.1.0.0" "libcrypto.so.3" "crypto v1.0" || create_lib_symlink "libcrypto.so.10" "libcrypto.so.3" "crypto v10" || true
 
-# ZIP libraries (try multiple versions common on RHEL7)
+# ZIP libraries
 create_lib_symlink "libzip.so.5" "libzip.so.4" "zip v5" || \
 create_lib_symlink "libzip.so.2" "libzip.so.4" "zip v2" || \
 create_lib_symlink "libzip.so.1" "libzip.so.4" "zip v1" || \
 create_lib_symlink "libzip.so.0" "libzip.so.4" "zip v0" || {
-	echo "       WARNING: Could not find any libzip library to link"
-	echo "       This is common on RHEL7 systems - libzip is not installed by default"
-	echo "       Attempting to find alternative zip libraries or create workaround..."
+	echo "       INFO: libzip not found in standard library paths"
 	
 	# Look for any zip-related libraries more broadly
 	for zip_lib in $(find /usr /lib -name "*zip*.so*" 2>/dev/null | grep -v perl | head -5); do
@@ -533,8 +490,7 @@ create_lib_symlink "libzip.so.0" "libzip.so.4" "zip v0" || {
 		fi
 	done
 	
-	# Note: On Ubuntu 22/heroku-22, libzip should be available from system packages
-	# The RPM download code has been removed as it's RHEL7-specific and causes issues on Ubuntu
+	# On Ubuntu 22/heroku-22, libzip should be available from system packages
 	if [[ ! -f "/app/.heroku/php-min/lib/libzip.so.4" ]]; then
 		echo "       INFO: libzip.so.4 not found in system libraries"
 		echo "       This is normal - PHP will use the system's libzip"
